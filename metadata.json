@@ -1,0 +1,6 @@
+{
+  "name": "Gravity Well",
+  "description": "Physics based space game with procedurally generated planets and manipulative space-time fabric.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
