@@ -41,6 +41,8 @@ const COLORS = [
 export default function GravityWellGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [score, setScore] = useState(0);
+  const [universe, setUniverse] = useState(1);
+  const [anomalyActive, setAnomalyActive] = useState(false);
   const [helpText, setHelpText] = useState("Click & drag anywhere to warp space and jump!");
 
   useEffect(() => {
@@ -67,6 +69,11 @@ export default function GravityWellGame() {
 
     // -- Game State --
     const camera = { x: 0, y: 0, zoom: 0.8, targetZoom: 0.25 };
+    let universeLevel = 1;
+    let time = 0;
+    let localVisitedCount = 0;
+    let bh = { active: false, x: 0, y: 0, radius: 450, mass: 60000, suckedIn: false, progress: 0, rotation: 0 };
+    
     const player = { 
       x: 0, y: -600, 
       vx: 0, vy: 0, 
@@ -162,11 +169,50 @@ export default function GravityWellGame() {
     });
 
     const updatePhysics = () => {
+      time++;
+
+      // Sucked in sequence bypasses standard physics
+      if (bh.suckedIn) {
+          bh.progress += 0.005; // ~3.3 seconds animation
+          player.x += (bh.x - player.x) * 0.05;
+          player.y += (bh.y - player.y) * 0.05;
+          player.radius = Math.max(0, 12 * (1 - bh.progress));
+          camera.targetZoom = 0.25 + Math.pow(bh.progress, 3) * 30; 
+          bh.rotation += Math.pow(bh.progress, 2) * 0.5;
+          
+          if (bh.progress >= 1) {
+              // New Universe Transition
+              universeLevel++;
+              setUniverse(universeLevel);
+              setAnomalyActive(false);
+              localVisitedCount = 0;
+              planets.length = 0;
+              generatedChunks.clear();
+              bh.active = false;
+              bh.suckedIn = false;
+              bh.progress = 0;
+              bh.rotation = 0;
+              player.x = 0;
+              player.y = -600;
+              player.vx = 0;
+              player.vy = 0;
+              player.radius = 12;
+              camera.x = 0;
+              camera.y = 0;
+              camera.zoom = 0.05;
+              camera.targetZoom = 0.25;
+              isDragging = false;
+              for (let x = -1; x <= 1; x++) {
+                  for (let y = -1; y <= 1; y++) generateChunk(x, y);
+              }
+          }
+      }
+
       // Slingshot Spring Physics (for the fabric visual)
       let targetPinchX = 0;
       let targetPinchY = 0;
 
-      if (isDragging) {
+      if (isDragging && !bh.suckedIn) {
          targetPinchX = dragStartScreen.x - dragCurrentScreen.x;
          targetPinchY = dragStartScreen.y - dragCurrentScreen.y;
          // Clamp the drag visual so we don't stretch infinitely
@@ -201,11 +247,30 @@ export default function GravityWellGame() {
       let fx = 0, fy = 0;
       let touchingPlanet = null;
 
-      for (let p of planets) {
-         let dx = p.x - player.x;
-         let dy = p.y - player.y;
-         let dist = Math.hypot(dx, dy);
-         if (dist < 10) dist = 10;
+      if (!bh.suckedIn) {
+          if (bh.active) {
+             let dx = bh.x - player.x;
+             let dy = bh.y - player.y;
+             let dist = Math.hypot(dx, dy);
+             if (dist < 10) dist = 10;
+             let force = (25 * bh.mass) / (dist * dist);
+             force = Math.min(force, 20); 
+             fx += (dx / dist) * force;
+             fy += (dy / dist) * force;
+             if (dist < bh.radius) bh.suckedIn = true;
+          }
+
+          if (universeLevel > 1) {
+              let waveForce = (universeLevel - 1) * 0.15;
+              fx += Math.sin(player.x / 1200 - time * 0.02) * waveForce;
+              fy += Math.cos(player.y / 1200 - time * 0.015) * waveForce;
+          }
+
+          for (let p of planets) {
+             let dx = p.x - player.x;
+             let dy = p.y - player.y;
+             let dist = Math.hypot(dx, dy);
+             if (dist < 10) dist = 10;
          
          const G = 10;
          let force = (G * p.mass) / (dist * dist);
@@ -241,10 +306,20 @@ export default function GravityWellGame() {
             
             if (!p.visited) {
                 p.visited = true;
+                localVisitedCount++;
                 setScore(s => s + 1);
                 player.lastColor = player.color;
                 player.targetColor = p.color;
                 player.colorProgress = 0;
+                
+                if (localVisitedCount === 10 && !bh.active) {
+                     let angle = Math.atan2(player.vy, player.vx);
+                     if (Math.hypot(player.vx, player.vy) < 0.5) angle = Math.random() * Math.PI * 2;
+                     bh.x = player.x + Math.cos(angle) * 3200;
+                     bh.y = player.y + Math.sin(angle) * 3200;
+                     bh.active = true;
+                     setAnomalyActive(true);
+                }
             }
 
             let nx = dx / dist;
@@ -272,6 +347,8 @@ export default function GravityWellGame() {
          }
       }
 
+      }
+
       // Trail history
       if (Math.hypot(player.vx, player.vy) > 0.5) {
         player.history.push({ x: player.x, y: player.y });
@@ -281,26 +358,30 @@ export default function GravityWellGame() {
       }
 
       // Camera Tracking
-      let camTargetX = player.x;
-      let camTargetY = player.y;
+      let camTargetX = bh.suckedIn ? bh.x : player.x;
+      let camTargetY = bh.suckedIn ? bh.y : player.y;
       
       // Look slightly ahead of slingshot
-      if (isDragging) {
+      if (isDragging && !bh.suckedIn) {
          camTargetX -= (dragCurrentScreen.x - dragStartScreen.x) * 3;
          camTargetY -= (dragCurrentScreen.y - dragStartScreen.y) * 3;
       }
 
-      camera.zoom += (camera.targetZoom - camera.zoom) * 0.015;
-      camera.x += (camTargetX - camera.x) * 0.04;
-      camera.y += (camTargetY - camera.y) * 0.04;
+      let camSpeed = bh.suckedIn ? 0.1 : 0.04;
+      let zoomSpeed = bh.suckedIn ? 0.05 : 0.015;
+      camera.zoom += (camera.targetZoom - camera.zoom) * zoomSpeed;
+      camera.x += (camTargetX - camera.x) * camSpeed;
+      camera.y += (camTargetY - camera.y) * camSpeed;
 
       // Infinite exploration generation
-      const playerCx = Math.floor(player.x / CHUNK_SIZE);
-      const playerCy = Math.floor(player.y / CHUNK_SIZE);
-      for (let dx = -1; dx <= 1; dx++) {
-         for (let dy = -1; dy <= 1; dy++) {
-            generateChunk(playerCx + dx, playerCy + dy);
-         }
+      if (!bh.suckedIn) {
+          const playerCx = Math.floor(player.x / CHUNK_SIZE);
+          const playerCy = Math.floor(player.y / CHUNK_SIZE);
+          for (let dx = -1; dx <= 1; dx++) {
+             for (let dy = -1; dy <= 1; dy++) {
+                generateChunk(playerCx + dx, playerCy + dy);
+             }
+          }
       }
     };
 
@@ -308,8 +389,15 @@ export default function GravityWellGame() {
       ctx.save();
       ctx.scale(dpr, dpr);
       
-      // Dark space background
-      ctx.clearRect(0, 0, width, height);
+      // Dark space background (draw massive rect for camera rotation safety)
+      ctx.fillStyle = '#05070a';
+      ctx.fillRect(-width * 2, -height * 2, width * 5, height * 5);
+
+      if (bh.rotation > 0) {
+          ctx.translate(width/2, height/2);
+          ctx.rotate(bh.rotation);
+          ctx.translate(-width/2, -height/2);
+      }
 
       // Stars parallax
       ctx.fillStyle = '#fff';
@@ -330,7 +418,7 @@ export default function GravityWellGame() {
       const GRID_SIZE = 140; // High resolution grid for dramatic 3D effect
       const worldWidth = width / camera.zoom;
       const worldHeight = height / camera.zoom;
-      const viewMargin = GRID_SIZE * 8; // High margin to never see grid edges
+      const viewMargin = GRID_SIZE * (8 + (bh.rotation > 0 ? 30 : 0)); // Extra margin for spinning camera
       
       const startX = Math.floor((camera.x - worldWidth/2 - viewMargin) / GRID_SIZE) * GRID_SIZE;
       const endX = Math.ceil((camera.x + worldWidth/2 + viewMargin) / GRID_SIZE) * GRID_SIZE;
@@ -360,6 +448,27 @@ export default function GravityWellGame() {
                dx += pdistX * pullRatio * falloff;
                dy += pdistY * pullRatio * falloff;
             }
+         }
+
+         if (bh.active) {
+             let pdistX = bh.x - wx;
+             let pdistY = bh.y - wy;
+             let dist = Math.hypot(pdistX, pdistY);
+             let influenceRadius = bh.radius * 60; // Huge sinkhole
+             if (dist < influenceRadius) {
+                 let falloff = Math.max(0, 1 - dist / influenceRadius);
+                 falloff = falloff * falloff * (3 - 2 * falloff);
+                 let pullRatio = Math.pow(bh.radius / Math.max(dist, bh.radius * 0.1), 1.4);
+                 pullRatio = Math.min(pullRatio, 0.98); 
+                 dx += pdistX * pullRatio * falloff;
+                 dy += pdistY * pullRatio * falloff;
+             }
+         }
+         
+         if (universeLevel > 1) {
+             let waveAmp = (universeLevel - 1) * 80;
+             dx += Math.sin(wx / 1200 - time * 0.02) * waveAmp;
+             dy += Math.cos(wy / 1200 - time * 0.015) * waveAmp;
          }
 
          // Player directional warp stretch
@@ -494,6 +603,61 @@ export default function GravityWellGame() {
          ctx.shadowBlur = 0; // reset
       }
 
+      // -- Black Hole --
+      if (bh.active) {
+          let ps = toScreen(bh.x, bh.y);
+          let sr = bh.radius * camera.zoom;
+          
+          // Inward moving accretion disk rings
+          for(let i = 1; i <= 8; i++) {
+               let offset = (time * 15) % 300; 
+               let ringDist = bh.radius + (i * i * 150) - offset;
+               if (ringDist < bh.radius) continue;
+
+               let ringScreen = ringDist * camera.zoom;
+               ctx.beginPath();
+               ctx.arc(ps.x, ps.y, ringScreen, 0, Math.PI * 2);
+               ctx.strokeStyle = `rgba(180, 50, 255, ${0.4 / i})`;
+               ctx.lineWidth = 4 * camera.zoom;
+               ctx.stroke();
+          }
+          
+          // Event Horizon Glow
+          ctx.shadowColor = '#a020f0';
+          ctx.shadowBlur = 100 * camera.zoom;
+          ctx.beginPath();
+          ctx.arc(ps.x, ps.y, sr, 0, Math.PI * 2);
+          ctx.fillStyle = '#000000';
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          
+          // Outer edge stroke
+          ctx.strokeStyle = '#300050';
+          ctx.lineWidth = 10 * camera.zoom;
+          ctx.stroke();
+          
+          // Off-screen / Directional indicator
+          if (!bh.suckedIn && (ps.x < 150 || ps.x > width - 150 || ps.y < 150 || ps.y > height - 150)) {
+              let angle = Math.atan2(ps.y - height/2, ps.x - width/2);
+              let indRadius = Math.min(width, height) * 0.38;
+              let indX = width/2 + Math.cos(angle) * indRadius;
+              let indY = height/2 + Math.sin(angle) * indRadius;
+              
+              ctx.beginPath();
+              ctx.moveTo(indX + Math.cos(angle)*15, indY + Math.sin(angle)*15);
+              ctx.lineTo(indX - Math.cos(angle - 0.3)*25, indY - Math.sin(angle - 0.3)*25);
+              ctx.lineTo(indX - Math.cos(angle)*10, indY - Math.sin(angle)*10);
+              ctx.lineTo(indX - Math.cos(angle + 0.3)*25, indY - Math.sin(angle + 0.3)*25);
+              ctx.closePath();
+              
+              ctx.fillStyle = '#a020f0';
+              ctx.shadowColor = '#a020f0';
+              ctx.shadowBlur = 20;
+              ctx.fill();
+              ctx.shadowBlur = 0;
+          }
+      }
+
       // -- Player Trail --
       if (player.history.length > 1) {
          ctx.beginPath();
@@ -530,6 +694,7 @@ export default function GravityWellGame() {
 
     // Input handlers
     const handleDown = (e: PointerEvent) => {
+      if (bh.suckedIn) return;
       isDragging = true;
       dragStartScreen = { x: e.clientX, y: e.clientY };
       dragCurrentScreen = { x: e.clientX, y: e.clientY };
@@ -615,6 +780,17 @@ export default function GravityWellGame() {
         </svg>
       </div>
 
+      {anomalyActive && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-[100] pointer-events-none flex flex-col items-center animate-pulse">
+           <div className="text-[#bd52ff] text-[10px] tracking-[4px] uppercase font-bold bg-[#a020f0]/20 px-4 py-1.5 rounded-full border border-[#bd52ff]/50 mb-3">
+             Warning
+           </div>
+           <div className="text-white text-xl tracking-[0.3em] uppercase font-[200] drop-shadow-[0_0_15px_rgba(160,32,240,0.8)] text-center">
+             Singularity Detected
+           </div>
+        </div>
+      )}
+
       <div className="absolute bottom-8 left-8 right-8 flex justify-center z-[100] pointer-events-none">
         {helpText && (
           <p className="bg-white/5 px-6 py-3 rounded-full border border-white/10 text-[11px] tracking-[1px] uppercase backdrop-blur-md">
@@ -625,10 +801,10 @@ export default function GravityWellGame() {
 
       <div className="absolute bottom-8 right-8 z-[100] pointer-events-none text-right flex flex-col items-end">
         <div className="text-[10px] uppercase tracking-[2px] text-white/50 mb-1">
-          Procedural Space
+          Universe {universe}
         </div>
         <div className="text-2xl font-[200] tracking-[-1px]">
-          Warp Drive Active
+          {universe > 1 ? "GRAVITY WAVES ACTIVE" : "Sector Mapped"}
         </div>
       </div>
     </div>
